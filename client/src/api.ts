@@ -176,6 +176,61 @@ export interface ScheduleSettings {
   dates: string[];
 }
 
+/* ------------------------------- 镜头清单 ------------------------------- */
+
+export type ShotStatus = 'pending' | 'shot' | 'retake';
+export type TakeResult = 'usable' | 'ng';
+
+export interface Take {
+  id: number;
+  shotId: number;
+  takeNo: number;
+  result: TakeResult;
+  note: string;
+  createdAt: string;
+}
+
+export interface Shot {
+  id: number;
+  sceneId: number;
+  code: string;
+  framing: string;
+  required: boolean;
+  note: string;
+  takes: Take[];
+  status: ShotStatus;
+  chosenBestTakeId: number | null;
+  bestTakeId: number | null;
+  bestInvalid: boolean;
+  usableCount: number;
+}
+
+export interface SceneShots {
+  sceneId: number;
+  title: string;
+  storyTime: string;
+  seq: number;
+  storyIndex: number;
+  shots: Shot[];
+  requiredCount: number;
+  requiredReady: number;
+  optionalCount: number;
+  optionalReady: number;
+  pendingCount: number;
+  retakeCount: number;
+  missingRequiredCount: number;
+  completionPct: number;
+  complete: boolean;
+}
+
+export interface ShotListReport {
+  generatedAt: string;
+  scenes: SceneShots[];
+  totalShots: number;
+  incompleteSceneCount: number;
+  retakeShotCount: number;
+}
+
 /* --------------------------------- 请求封装 --------------------------------- */
 
 async function req<T>(url: string, options?: RequestInit): Promise<T> {
@@ -250,4 +305,37 @@ export const api = {
     }),
   unlockScene: (id: number) =>
     req<ScheduleReport>(`/api/schedule/${id}/lock`, { method: 'DELETE' }),
+
+  /* 镜头清单：所有写操作均返回最新全量报告，保存后即时刷新 */
+  shotList: (sceneId?: number) =>
+    req<ShotListReport>(`/api/shots${sceneId ? `?sceneId=${sceneId}` : ''}`),
+  createShot: (
+    sceneId: number,
+    p: { code: string; framing: string; required: boolean; note: string }
+  ) =>
+    req<ShotListReport>(`/api/scenes/${sceneId}/shots`, {
+      method: 'POST',
+      body: JSON.stringify(p),
+    }),
+  updateShot: (
+    id: number,
+    p: { code: string; framing: string; required: boolean; note: string }
+  ) =>
+    req<ShotListReport>(`/api/shots/${id}`, { method: 'PUT', body: JSON.stringify(p) }),
+  deleteShot: (id: number) =>
+    req<ShotListReport>(`/api/shots/${id}`, { method: 'DELETE' }),
+  addTake: (shotId: number, p: { result: TakeResult; note: string }) =>
+    req<ShotListReport>(`/api/shots/${shotId}/takes`, {
+      method: 'POST',
+      body: JSON.stringify(p),
+    }),
+  updateTake: (takeId: number, p: { result: TakeResult; note: string }) =>
+    req<ShotListReport>(`/api/takes/${takeId}`, { method: 'PUT', body: JSON.stringify(p) }),
+  deleteTake: (takeId: number) =>
+    req<ShotListReport>(`/api/takes/${takeId}`, { method: 'DELETE' }),
+  chooseBest: (shotId: number, takeId: number | null) =>
+    req<ShotListReport>(`/api/shots/${shotId}/best`, {
+      method: 'PUT',
+      body: JSON.stringify({ takeId }),
+    }),
 };

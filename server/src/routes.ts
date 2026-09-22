@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import { db, isValidDateISO } from './db.js';
 import { computeContinuity } from './engine.js';
 import { computeSchedule, computeStoryOrder, getScheduleSettings } from './schedule.js';
+import { computeShotList } from './shots.js';
 
 export const api = Router();
 
@@ -551,5 +552,177 @@ api.delete(
     const sceneId = idParam(req);
     db.prepare('DELETE FROM schedule_locks WHERE scene_id = ?').run(sceneId);
     res.json(computeSchedule());
+  })
+);
+
+/* -------------------------------- 镜头清单 -------------------------------- */
+//
+// 只读 shots/takes 两张表并按固定规则现算状态、最佳条与场景完成度；
+// 不读取 snapshots/changes，也不写入排程表——与连续性重放、拍摄排程互不影响。
+
+/** 镜头清单（按场景分组，可 ?sceneId= 只取单场景） */
+api.get(
+  '/shots',
+  h((req, res) => {
+    const report = computeShotList();
+    const sceneId = num(req.query.sceneId, 0);
+    if (sceneId > 0) {
+      res.json({ ...report, scenes: report.scenes.filter((s) => s.sceneId === sceneId) });
+      return;
+    }
+    res.json(report);
+  })
+);
+
+function parseShotBody(req: Request) {
+  const code = requireStr(req.body?.code, '镜头编号', 30);
+  const framing = str(req.body?.framing).slice(0, 100);
+  const required = req.body?.required !== false && req.body?.required !== 0;
+  const note = str(req.body?.note).slice(0, 500);
+  return { code, framing, required, note };
+}
+
+function sceneExists(sceneId: number): boolean {
+  return !!db.prepare('SELECT id FROM scenes WHERE id = ?').get(sceneId);
+}
+
+/** 在某场景下新建镜头 */
+api.post(
+  '/scenes/:id/shots',
+  h((req, res) => {
+    const sceneId = idParam(req);
+    if (!sceneExists(sceneId)) throw new HttpError(404, '场景不存在');
+    const b = parseShotBody(req);
+    db.transaction(() => {
+      const dup = db
+        .prepare('SELECT id FROM shots WHERE scene_id = ? AND code = ?')
+        .get(sceneId, b.code);
+      if (dup) throw new HttpError(409, `该场景下已存在编号为「${b.code}」的镜头`);
+      db.prepare(
+        'INSERT INTO shots (scene_id, code, framing, required, note) VALUES (?, ?, ?, ?, ?)'
+      ).run(sceneId, b.code, b.framing, b.required ? 1 : 0, b.note);
+    })();
+    res.status(201).json(computeShotList());
+  })
+);
+
+/** 更新镜头（编号 / 景别机位 / 是否必拍 / 备注） */
+api.put(
+  '/shots/:id',
+  h((req, res) => {
+    const shotId = idParam(req);
+    const b = parseShotBody(req);
+    db.transaction(() => {
+      const row = db.prepare('SELECT scene_id FROM shots WHERE id = ?').get(shotId) as
+        | { scene_id: number }
+        | undefined;
+      if (!row) throw new HttpError(404, '镜头不存在');
+      const dup = db
+        .prepare('SELECT id FROM shots WHERE scene_id = ? AND code = ? AND id <> ?')
+        .get(row.scene_id, b.code, shotId);
+      if (dup) throw new HttpError(409, `该场景下已存在编号为「${b.code}」的镜头`);
+      db.prepare(
+        'UPDATE shots SET code = ?, framing = ?, required = ?, note = ? WHERE id = ?'
+      ).run(b.code, b.framing, b.required ? 1 : 0, b.note, shotId);
+    })();
+    res.json(computeShotList());
+  })
+);
+
+/** 删除镜头（其拍摄条目级联删除） */
+api.delete(
+  '/shots/:id',
+  h((req, res) => {
+    const shotId = idParam(req);
+    const r = db.prepare('DELETE FROM shots WHERE id = ?').run(shotId);
+    if (r.changes === 0) throw new HttpError(404, '镜头不存在');
+    res.json(computeShotList());
+  })
+);
+
+/** 为镜头登记一次拍摄结果（条次自动递增） */
+api.post(
+  '/shots/:id/takes',
+  h((req, res) => {
+    const shotId = idParam(req);
+    const result = str(req.body?.result) || 'usable';
+    if (result !== 'usable' && result !== 'ng') {
+      throw new HttpError(400, "result 只能是 'usable' 或 'ng'");
+    }
+    const note = str(req.body?.note).slice(0, 500);
+    db.transaction(() => {
+      const shot = db.prepare('SELECT id FROM shots WHERE id = ?').get(shotId);
+      if (!shot) throw new HttpError(404, '镜头不存在');
+      const max = db
+        .prepare('SELECT COALESCE(MAX(take_no), 0) AS n FROM takes WHERE shot_id = ?')
+        .get(shotId) as { n: number };
+      db.prepare('INSERT INTO takes (shot_id, take_no, result, note) VALUES (?, ?, ?, ?)').run(
+        shotId,
+        max.n + 1,
+        result,
+        note
+      );
+    })();
+    res.status(201).json(computeShotList());
+  })
+);
+
+/** 修改某条拍摄结果（可用 / 不可用 / 备注）；若最佳条因此失效，引擎会自动回退 */
+api.put(
+  '/takes/:id',
+  h((req, res) => {
+    const takeId = idParam(req);
+    const result = str(req.body?.result) || 'usable';
+    if (result !== 'usable' && result !== 'ng') {
+      throw new HttpError(400, "result 只能是 'usable' 或 'ng'");
+    }
+    const note = str(req.body?.note).slice(0, 500);
+    const r = db
+      .prepare('UPDATE takes SET result = ?, note = ? WHERE id = ?')
+      .run(result, note, takeId);
+    if (r.changes === 0) throw new HttpError(404, '拍摄记录不存在');
+    res.json(computeShotList());
+  })
+);
+
+/** 删除某条拍摄记录；若它是手动最佳条则清除选择（自动回退到其他可用条） */
+api.delete(
+  '/takes/:id',
+  h((req, res) => {
+    const takeId = idParam(req);
+    db.transaction(() => {
+      const row = db.prepare('SELECT shot_id FROM takes WHERE id = ?').get(takeId) as
+        | { shot_id: number }
+        | undefined;
+      if (!row) throw new HttpError(404, '拍摄记录不存在');
+      db.prepare('DELETE FROM takes WHERE id = ?').run(takeId);
+      db.prepare('UPDATE shots SET best_take_id = NULL WHERE best_take_id = ?').run(takeId);
+    })();
+    res.json(computeShotList());
+  })
+);
+
+/** 选择最佳条（body: {takeId}；takeId 必须属于该镜头且为可用条；takeId=null 清除手选、改用自动选择） */
+api.put(
+  '/shots/:id/best',
+  h((req, res) => {
+    const shotId = idParam(req);
+    const rawTakeId = req.body?.takeId;
+    const takeId = rawTakeId == null ? null : num(rawTakeId, -1);
+    db.transaction(() => {
+      const shot = db.prepare('SELECT id FROM shots WHERE id = ?').get(shotId);
+      if (!shot) throw new HttpError(404, '镜头不存在');
+      if (takeId == null) {
+        db.prepare('UPDATE shots SET best_take_id = NULL WHERE id = ?').run(shotId);
+        return;
+      }
+      const take = db
+        .prepare('SELECT result FROM takes WHERE id = ? AND shot_id = ?')
+        .get(takeId, shotId) as { result: string } | undefined;
+      if (!take) throw new HttpError(400, '该拍摄记录不属于此镜头');
+      if (take.result !== 'usable') throw new HttpError(400, '只有可用条才能设为最佳条');
+      db.prepare('UPDATE shots SET best_take_id = ? WHERE id = ?').run(takeId, shotId);
+    })();
+    res.json(computeShotList());
   })
 );

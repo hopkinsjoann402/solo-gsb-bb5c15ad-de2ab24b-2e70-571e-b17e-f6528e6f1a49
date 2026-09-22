@@ -108,11 +108,35 @@ export function migrate(): void {
       locked_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- 镜头清单：每个场景下的镜头（编号 / 景别机位 / 是否必拍 / 备注）
+    CREATE TABLE IF NOT EXISTS shots (
+      id           INTEGER PRIMARY KEY AUTOINCREMENT,
+      scene_id     INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      code         TEXT NOT NULL,              -- 镜头编号，如 '1A'
+      framing      TEXT NOT NULL DEFAULT '',   -- 景别/机位，如 '大全景 · 固定'
+      required     INTEGER NOT NULL DEFAULT 1,-- 1 = 必拍
+      note         TEXT NOT NULL DEFAULT '',
+      best_take_id INTEGER,                    -- 用户手动选择的最佳条（应用层校验归属）
+      created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- 拍摄结果登记：一个镜头可登记多次（每条 = 一次拍摄）
+    CREATE TABLE IF NOT EXISTS takes (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      shot_id    INTEGER NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
+      take_no    INTEGER NOT NULL,            -- 镜头内条次，从 1 递增
+      result     TEXT NOT NULL DEFAULT 'usable', -- 'usable' 可用 | 'ng' 不可用（需重拍）
+      note       TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_scenes_order   ON scenes (story_time, seq, id);
     CREATE INDEX IF NOT EXISTS idx_snapshots_scene ON snapshots (scene_id);
     CREATE INDEX IF NOT EXISTS idx_changes_scene  ON changes (scene_id);
     CREATE INDEX IF NOT EXISTS idx_changes_entity ON changes (entity_id);
     CREATE INDEX IF NOT EXISTS idx_locks_date     ON schedule_locks (date, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_shots_scene    ON shots (scene_id);
+    CREATE INDEX IF NOT EXISTS idx_takes_shot     ON takes (shot_id);
   `);
 
   // 旧库升级：为 scenes 增补排程字段（全新库由建表直接包含）
@@ -236,6 +260,64 @@ export function seedIfEmpty(): void {
       .prepare('SELECT date FROM schedule_dates ORDER BY sort_order')
       .all() as { date: string }[];
     if (dates[1]) insLock.run(s3, dates[1].date, 1);
+
+    /* ---------------- 镜头清单演示数据（与排程/重放完全独立） ---------------- */
+    const insShot = db.prepare(
+      'INSERT INTO shots (scene_id, code, framing, required, note, best_take_id) VALUES (?, ?, ?, ?, ?, ?)'
+    );
+    const insTake = db.prepare(
+      'INSERT INTO takes (shot_id, take_no, result, note) VALUES (?, ?, ?, ?)'
+    );
+    const addShot = (
+      sceneId: number,
+      code: string,
+      framing: string,
+      required: 0 | 1,
+      note: string,
+      takes: { result: 'usable' | 'ng'; note: string }[],
+      chooseBest: 'auto' | 'none' = 'auto'
+    ) => {
+      const shotId = insShot.run(sceneId, code, framing, required, note, null).lastInsertRowid as number;
+      let bestId: number | null = null;
+      takes.forEach((t, i) => {
+        const takeId = insTake.run(shotId, i + 1, t.result, t.note).lastInsertRowid as number;
+        if (t.result === 'usable') bestId = takeId; // 最后一条可用条作为自动最佳条
+      });
+      if (chooseBest === 'auto' && bestId != null) {
+        db.prepare('UPDATE shots SET best_take_id = ? WHERE id = ?').run(bestId, shotId);
+      }
+    };
+
+    // S1 雨夜公寓：必拍齐全 => 场景完成
+    addShot(s1, '1A', '大全景 · 固定', 1, '公寓外景，雨幕', [
+      { result: 'ng', note: '雨声过响，对白不清' },
+      { result: 'usable', note: '收音正常' },
+    ]);
+    addShot(s1, '1B', '近景 · 手持', 1, '林雪进门', [{ result: 'usable', note: '一次过' }]);
+    addShot(s1, '1C', '特写 · 推镜', 0, '怀表入画（可选）', [{ result: 'usable', note: '' }]);
+
+    // S2 医院走廊：有一个必拍镜头需重拍（全部不可用）
+    addShot(s2, '2A', '中景 · 跟拍', 1, '林雪走向病房', [
+      { result: 'usable', note: '' },
+    ]);
+    addShot(s2, '2B', '特写', 1, '左手包扎细节', [
+      { result: 'ng', note: '绷带穿帮' },
+      { result: 'ng', note: '焦点虚了' },
+    ]);
+
+    // S3 天台对峙：必拍镜头待拍
+    addShot(s3, '3A', '双人中景', 1, '摊牌主镜头', []);
+    addShot(s3, '3B', '过肩反打 · 陈默', 1, '摘眼镜动作', []);
+
+    // S4 码头告别：已拍但手动最佳条失效（指向不可用条）
+    const s4a = insShot.run(s4, '4A', '远景 · 摇臂', 1, '清晨江景', null).lastInsertRowid as number;
+    const t4a = insTake.run(s4a, 1, 'usable', '光线合适').lastInsertRowid as number;
+    insTake.run(s4a, 2, 'ng', '船鸣干扰');
+    db.prepare('UPDATE shots SET best_take_id = ? WHERE id = ?').run(t4a, s4a);
+    const s4b = insShot.run(s4, '4B', '特写', 0, '怀表合上', null).lastInsertRowid as number;
+    const t4bBad = insTake.run(s4b, 1, 'ng', '手抖').lastInsertRowid as number;
+    // 刻意：手动选择了一条不可用条 => 最佳条失效、镜头回到需重拍
+    db.prepare('UPDATE shots SET best_take_id = ? WHERE id = ?').run(t4bBad, s4b);
   });
 
   seed();
