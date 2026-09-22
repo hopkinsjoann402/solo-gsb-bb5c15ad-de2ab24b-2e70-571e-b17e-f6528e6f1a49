@@ -176,6 +176,75 @@ export interface ScheduleSettings {
   dates: string[];
 }
 
+/* ------------------------------- 镜头清单 ------------------------------- */
+
+export type ShotStatus = 'pending' | 'done' | 'reshoot';
+export type ReshootReason = 'no-best' | 'best-ng' | 'all-ng';
+
+export interface TakeItem {
+  id: number;
+  shotId: number;
+  takeNo: number;
+  usable: boolean;
+  isBest: boolean;
+  note: string;
+}
+
+export interface ShotItem {
+  id: number;
+  sceneId: number;
+  shotNo: string;
+  framing: string;
+  camera: string;
+  required: boolean;
+  note: string;
+  status: ShotStatus;
+  reshootReason: ReshootReason | null;
+  bestTakeId: number | null;
+  takes: TakeItem[];
+}
+
+export interface SceneShots {
+  sceneId: number;
+  title: string;
+  storyTime: string;
+  seq: number;
+  storyIndex: number;
+  totalShots: number;
+  requiredShots: number;
+  doneShots: number;
+  requiredDone: number;
+  pendingShots: number;
+  reshootShots: number;
+  completion: number;
+  complete: boolean;
+  shots: ShotItem[];
+}
+
+export interface ShotListReport {
+  generatedAt: string;
+  scenes: SceneShots[];
+  totals: {
+    scenes: number;
+    completeScenes: number;
+    scenesWithoutShots: number;
+    shots: number;
+    requiredShots: number;
+    doneShots: number;
+    requiredDone: number;
+    pendingShots: number;
+    reshootShots: number;
+  };
+}
+
+export interface ShotPayload {
+  shotNo: string;
+  framing: string;
+  camera: string;
+  required: boolean;
+  note: string;
+}
+
 /* --------------------------------- 请求封装 --------------------------------- */
 
 async function req<T>(url: string, options?: RequestInit): Promise<T> {
@@ -250,4 +319,32 @@ export const api = {
     }),
   unlockScene: (id: number) =>
     req<ScheduleReport>(`/api/schedule/${id}/lock`, { method: 'DELETE' }),
+
+  shotList: (sceneId?: number) =>
+    req<ShotListReport>(`/api/shots${sceneId ? `?sceneId=${sceneId}` : ''}`),
+  createShot: (sceneId: number, p: ShotPayload) =>
+    req<ShotListReport>(`/api/scenes/${sceneId}/shots`, {
+      method: 'POST',
+      body: JSON.stringify(p),
+    }),
+  updateShot: (id: number, p: ShotPayload) =>
+    req<ShotListReport>(`/api/shots/${id}`, { method: 'PUT', body: JSON.stringify(p) }),
+  deleteShot: (id: number) => req<ShotListReport>(`/api/shots/${id}`, { method: 'DELETE' }),
+
+  addTake: (shotId: number, usable: boolean, note: string) =>
+    req<ShotListReport>(`/api/shots/${shotId}/takes`, {
+      method: 'POST',
+      body: JSON.stringify({ usable, note }),
+    }),
+  updateTake: (id: number, usable: boolean, note: string) =>
+    req<ShotListReport>(`/api/takes/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ usable, note }),
+    }),
+  deleteTake: (id: number) => req<ShotListReport>(`/api/takes/${id}`, { method: 'DELETE' }),
+  setBestTake: (shotId: number, takeId: number) =>
+    req<ShotListReport>(`/api/shots/${shotId}/best`, {
+      method: 'PUT',
+      body: JSON.stringify({ takeId }),
+    }),
 };

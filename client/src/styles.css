@@ -603,3 +603,123 @@ tr.row-first td {
   flex: 1;
   min-width: 120px;
 }
+
+/* ---------- 镜头清单 ---------- */
+.shot-scene-complete {
+  border-color: rgba(63, 206, 139, 0.55);
+}
+.shot-scene-reshoot {
+  border-color: rgba(255, 107, 107, 0.6);
+}
+.shot-scene-pending {
+  border-color: rgba(255, 184, 77, 0.5);
+}
+.shot-scene-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.shot-scene-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.shot-progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+.shot-progress-fill {
+  height: 100%;
+  background: var(--warn);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+.shot-progress-fill.shot-progress-done {
+  background: var(--ok);
+}
+
+.shot-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--panel-2);
+}
+.shot-row.shot-done {
+  border-color: rgba(63, 206, 139, 0.45);
+}
+.shot-row.shot-reshoot {
+  border-color: rgba(255, 107, 107, 0.55);
+  background: rgba(255, 107, 107, 0.06);
+}
+.shot-row.shot-pending {
+  border-color: rgba(255, 184, 77, 0.4);
+}
+.shot-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.shot-no-input {
+  max-width: 90px;
+  font-weight: 600;
+}
+.shot-add-form {
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+
+.take-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: 14px;
+  padding-left: 12px;
+  border-left: 2px solid var(--border);
+  align-items: flex-start;
+}
+.take-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+.take-row input {
+  flex: 1;
+  min-width: 140px;
+  padding: 6px 10px;
+}
+.take-row select {
+  padding: 6px 8px;
+}
+.take-no {
+  flex: none;
+  width: 58px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.take-best .take-no {
+  color: var(--ok);
+}
+.take-ng .take-no {
+  color: var(--bad);
+}
+.take-star {
+  padding: 4px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.take-star-on {
+  color: var(--ok);
+  border-color: var(--ok);
+  background: rgba(63, 206, 139, 0.1);
+}

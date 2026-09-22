@@ -108,11 +108,37 @@ export function migrate(): void {
       locked_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    -- 镜头清单：每个场景的镜头（编号 / 景别 / 机位 / 是否必拍 / 备注）
+    CREATE TABLE IF NOT EXISTS shots (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      scene_id   INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+      shot_no    TEXT NOT NULL,               -- 镜头编号，如 '1'、'2A'
+      framing    TEXT NOT NULL DEFAULT '',    -- 景别：远景/全景/中景/近景/特写…
+      camera     TEXT NOT NULL DEFAULT '',    -- 机位：A 机/手持/轨道…
+      required   INTEGER NOT NULL DEFAULT 1,  -- 是否必拍镜头
+      note       TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- 拍摄结果（条）：一个镜头可登记多条；is_best 标记「最佳条」
+    CREATE TABLE IF NOT EXISTS takes (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      shot_id    INTEGER NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
+      take_no    INTEGER NOT NULL,            -- 第几条（镜头内从 1 递增）
+      usable     INTEGER NOT NULL DEFAULT 1,  -- 本条是否可用（0 = NG）
+      is_best    INTEGER NOT NULL DEFAULT 0,  -- 是否最佳条（每个镜头至多一条）
+      note       TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
     CREATE INDEX IF NOT EXISTS idx_scenes_order   ON scenes (story_time, seq, id);
     CREATE INDEX IF NOT EXISTS idx_snapshots_scene ON snapshots (scene_id);
     CREATE INDEX IF NOT EXISTS idx_changes_scene  ON changes (scene_id);
     CREATE INDEX IF NOT EXISTS idx_changes_entity ON changes (entity_id);
     CREATE INDEX IF NOT EXISTS idx_locks_date     ON schedule_locks (date, ordinal);
+    CREATE INDEX IF NOT EXISTS idx_shots_scene    ON shots (scene_id, sort_order, id);
+    CREATE INDEX IF NOT EXISTS idx_takes_shot     ON takes (shot_id, take_no);
   `);
 
   // 旧库升级：为 scenes 增补排程字段（全新库由建表直接包含）
@@ -164,6 +190,12 @@ export function seedIfEmpty(): void {
     );
     const insLock = db.prepare(
       'INSERT INTO schedule_locks (scene_id, date, ordinal) VALUES (?, ?, ?)'
+    );
+    const insShot = db.prepare(
+      'INSERT INTO shots (scene_id, shot_no, framing, camera, required, note, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    );
+    const insTake = db.prepare(
+      'INSERT INTO takes (shot_id, take_no, usable, is_best, note) VALUES (?, ?, ?, ?, ?)'
     );
 
     const lin = insEntity.run('林雪', 'character', '女主角').lastInsertRowid as number;
@@ -230,6 +262,28 @@ export function seedIfEmpty(): void {
       'D 场地 · 江边码头', 60, 4
     ).lastInsertRowid as number;
     insSnap.run(s6, watch, 'lid', '合上');
+
+    // 演示镜头清单：覆盖「已拍 / 待拍 / 需重拍 / 缺镜头」四种状态
+    // 雨夜公寓：镜头 1 已拍（最佳条=第 2 条）；镜头 2 有可用条但未选最佳条（需重拍）；镜头 3 待拍
+    const s1sh1 = insShot.run(s1, '1', '全景', 'A 机 · 固定', 1, '开场建立镜头', 1).lastInsertRowid as number;
+    insTake.run(s1sh1, 1, 0, 0, '穿帮：窗外出现工作人员');
+    insTake.run(s1sh1, 2, 1, 1, '表演到位，选为最佳条');
+    const s1sh2 = insShot.run(s1, '2', '特写', '手持', 1, '怀表特写，注意焦点', 2).lastInsertRowid as number;
+    insTake.run(s1sh2, 1, 1, 0, '可用，但导演尚未选定最佳条');
+    insShot.run(s1, '3', '中景', 'B 机 · 轨道', 0, '氛围补拍镜头（非必拍）', 3);
+
+    // 医院走廊：两个必拍镜头均已有可用最佳条 → 场景完成
+    const s2sh1 = insShot.run(s2, '1', '全景', 'A 机 · 固定', 1, '', 1).lastInsertRowid as number;
+    insTake.run(s2sh1, 1, 1, 1, '一条过');
+    const s2sh2 = insShot.run(s2, '2', '近景', '轨道', 1, '林雪摔倒', 2).lastInsertRowid as number;
+    insTake.run(s2sh2, 1, 1, 1, '');
+    insTake.run(s2sh2, 2, 0, 0, '群演走位错误');
+
+    // 天台对峙：唯一必拍镜头的唯一一条 NG → 需重拍
+    const s3sh1 = insShot.run(s3, '1', '大全景', '无人机', 1, '黄昏逆光', 1).lastInsertRowid as number;
+    insTake.run(s3sh1, 1, 0, 0, '风大画面晃动，不可用');
+
+    // 码头告别 / 公寓闪回 / 码头尾声：未建镜头 → 列表中突出「缺镜头」
 
     // 演示锁定：天台对峙锁定在第 2 个拍摄日的第 1 个位置
     const dates = db
